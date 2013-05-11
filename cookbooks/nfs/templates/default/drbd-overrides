@@ -1,0 +1,12 @@
+### BEGIN INIT INFO
+# Provides: drbd
+# Required-Start:
+# Required-Stop:
+# Should-Start:   sshd multipathd
+# Should-Stop:    sshd multipathd
+# Default-Start:  2 3 4 5
+# Default-Stop:   0 1 6
+# X-Start-Before: heartbeat corosync pve-cluster
+# X-Stop-After:   heartbeat corosync pve-cluster
+# Short-Description:    Control drbd resources.
+### END INIT INFO
