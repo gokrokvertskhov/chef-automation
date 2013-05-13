@@ -17,6 +17,8 @@ resource_name = params["drbd_resource"]
 role = params["drbd_role"]
 network = master_ip.rpartition(".")[0]
 network = network + ".0"
+master = `host #{master_ip} | cut -d ' ' -f 5 | cut -d '.' -f1`
+slave = `host #{slave_ip} | cut -d ' ' -f 5 | cut -d '.' -f1`
 case role
  when "master"
   tunnel_ip = "172.16.0.1"
@@ -31,91 +33,6 @@ tunnel_net = tunnel_ip.rpartition(".")[0]
 tunnel_net = tunnel_net + ".0"
 
 tun1_exist = `cat /etc/network/interfaces | grep tun1`
-
-template "/etc/drbd.d/global_common.conf" do
-  source "global_common.conf"
-  variables(
-   :resource_name => resource_name,
-   :node1_ip => master_ip,
-   :node2_ip => slave_ip,
-   :volume => params["volume"],
-   :device => params["device"]
- )
- notifies :start, "service[drbd]", :immediately
- notifies :run, 'execute[drbd-init]', :immediately
-end
-
-template "/etc/corosync/corosync.conf" do
-  source "corosync.conf"
-    variables(
-      :bind_addr => tunnel_net
-    )
-end
-
-template "/etc/default/corosync" do
-  source "corosync"
-end
-#template "/etc/cluster/cluster.conf" do
-#  source "cluster.conf"
-#  notifies :start, "service[cman]", :immediately
-#end
-
-template "/etc/exports" do
-  source "exports"
-  variables(
-   :network => network
-  )
-end
-
-template "/etc/insserv/overrides/drbd" do
-  source "drbd-overrides"
-end
-
-template "/etc/default/nfs-kernel-server" do
-  source "nfs-kernel-server"
-end
-
-template "/etc/default/nfs-common" do
-  source "nfs-common"
-end
-
-template "/etc/modprobe.d/local.conf" do
-  source "local.conf"
-end
-
-template "/etc/pacemaker.conf" do
-  source "pacemaker.conf"
-  notifies :start, "service[corosync]", :immediate
-  notifies :run, "execute[update-pacemaker-config]", :immediate
-end
-
-execute "update-pacemaker-config" do
-  command "crm configure load replace /etc/pacemaker.conf"
-  action :nothing
-end
-
-execute "drbd-init" do
- command "drbdadm create-md #{resource_name}; drbdadm -- --overwrite-data-of-peer primary all"
- action :nothing
-end
-
-execute "drbd-connect" do
- command "drbdadm connect #{resource_name}"
- action :nothing
-end
-
-service "drbd" do
- action :enable
-end
-
-#service "cman" do
-# action :enable
-#end
-
-service "corosync" do
- action :enable
-end
-
 
 bash "add-tunnel-interface" do
 
@@ -138,6 +55,138 @@ execute "ifconfig-tun1" do
   command "ifup tun1; ifconfig tun1 up"
   action :nothing
 end
+
+execute "disable-nfs-service-auto-start" do
+  command "update-rc.d -f nfs-kernel-server remove"
+end
+
+service "nfs-kernel-server" do
+  action :stop
+end
+
+template "/etc/drbd.d/global_common.conf" do
+  source "global_common.conf"
+  variables(
+   :resource_name => resource_name,
+   :node1_ip => master_ip,
+   :node2_ip => slave_ip,
+   :volume => params["volume"],
+   :device => params["device"],
+   :master => master,
+   :slave => slave
+ )
+ notifies :start, "service[drbd]", :immediately
+ notifies :run, 'execute[drbd-init]', :immediately
+end
+
+template "/etc/corosync/corosync.conf" do
+  source "corosync.conf"
+    variables(
+      :bind_addr => tunnel_net
+    )
+end
+
+template "/etc/default/corosync" do
+  source "corosync"
+  notifies :start, "service[corosync]", :immediate
+end
+
+
+#template "/etc/cluster/cluster.conf" do
+#  source "cluster.conf"
+#  notifies :start, "service[cman]", :immediately
+#end
+
+template "/etc/exports" do
+  source "exports"
+  variables(
+   :network => network
+  )
+end
+
+template "/etc/lvm/lvm.conf" do
+  source "lvm.conf"
+end
+
+template  "/etc/init.d/lvm-rescan" do
+  source "lvm-rescan"
+  mode 00755
+end
+
+template "/etc/insserv/overrides/drbd" do
+  source "drbd-overrides"
+end
+
+template "/etc/default/nfs-kernel-server" do
+  source "nfs-kernel-server"
+end
+
+template "/etc/default/nfs-common" do
+  source "nfs-common"
+end
+
+template "/etc/modprobe.d/local.conf" do
+  source "local.conf"
+end
+
+template "/etc/pacemaker.conf" do
+  source "pacemaker.conf"
+  
+  notifies :run, "execute[update-pacemaker-config]", :delayed
+end
+
+execute "update-pacemaker-config" do
+  command "crm configure load update /etc/pacemaker.conf"
+  action :nothing
+end
+
+execute "drbd-init" do
+ case role
+  when "master"
+   command "drbdadm create-md #{resource_name}; service drbd start;  drbdadm -- --overwrite-data-of-peer primary all"
+  when "slave" 
+   command "drbdadm create-md #{resource_name}; drbdadm slave #{resource_name}; service drbd start"
+  end
+ action :nothing
+ if role == "master" 
+   notifies :run, "execute[setup-lvm]", :immediate
+ end
+end
+
+execute "setup-lvm" do
+  command "pvcreate /dev/drbd0; vgcreate nfs-share /dev/drbd0; lvcreate -l 100%VG -n data nfs-share;"
+  notifies :run, "execute[format-data]", :immediate
+  action :nothing
+end
+
+execute "format-data" do
+  command "mkfs.ext4 /dev/nfs-share/data"
+  action :nothing
+end
+
+execute "drbd-connect" do
+ command "drbdadm connect #{resource_name}"
+ action :nothing
+end
+
+service "drbd" do
+ action :enable
+end
+
+#service "cman" do
+# action :enable
+#end
+
+service "corosync" do
+ action :enable
+end
+
+execute "update-rc.d" do
+  command "update-rc.d corosync defaults"
+end
+
+
+
 #mount '/mnt/data_joliss' do
 #  action [:mount, :enable]  # mount and add to fstab
 #  device 'data_joliss'

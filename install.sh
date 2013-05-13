@@ -21,6 +21,7 @@ if [ "$kernel_v" != "$required_kernel" ]; then
   if [ "$answer" == "y" ]; then
     echo "You will need to start this script again after reboot."
     sleep 5
+    apt-get update
     apt-get install linux-image-extra-virtual
     reboot
   fi
